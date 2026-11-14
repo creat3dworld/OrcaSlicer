@@ -6178,7 +6178,22 @@ static std::string get_user_data_dir()
 // binary; no path is hardcoded.
 static std::string get_portable_data_dir()
 {
-    auto app_folder = boost::filesystem::path(wxStandardPaths::Get().GetExecutablePath().ToUTF8().data()).parent_path();
+    // Resolve the exe directory WITHOUT wxWidgets: the CLI never
+    // initializes wx (main() calls CLI::run directly), so the old
+    // wxStandardPaths::Get().GetExecutablePath() call crashed the CLI
+    // at startup with an access violation. boost::dll::program_location()
+    // resolves the running exe on Windows/macOS/Linux with no wx needed.
+    // (The GUI resolves its data dir after wx is up, so it was unaffected.)
+    // If the exe path cannot be resolved, return empty so the CLI falls
+    // back to its built-in defaults (-51) instead of crashing.
+    boost::filesystem::path app_folder;
+    try {
+        app_folder = boost::dll::program_location().parent_path();
+    } catch (...) {
+        return {};
+    }
+    if (app_folder.empty())
+        return {};
 #ifdef __APPLE__
     // On macOS, the executable is inside the .app bundle.
     app_folder = app_folder.parent_path().parent_path().parent_path();
