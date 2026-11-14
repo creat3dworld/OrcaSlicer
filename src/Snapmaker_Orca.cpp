@@ -6151,21 +6151,39 @@ int CLI::run(int argc, char **argv)
     return 0;
 }
 
-// Resolve the per-user data folder, using exactly the same resolution the
-// GUI uses when <exe-dir>/data_dir does not exist (GUI_App::OnInit):
-// wxStandardPaths::GetUserDataDir() on Windows/macOS, ${XDG_CONFIG_HOME}
-// (or ~/.config) + app name on Linux. The app name is SLIC3R_APP_KEY,
-// which is also what the GUI sets via SetAppName().
+// Resolve the per-user data folder WITHOUT wxWidgets: the CLI never
+// initializes wx (main() calls CLI::run directly), so the old
+// wxStandardPaths::Get().GetUserDataDir() call crashed the CLI at
+// startup with an access violation — the same root cause as
+// get_portable_data_dir(), fixed in 09474b7, which only replaced the
+// wx call there and missed this one. Use exactly the same resolution
+// the GUI uses when <exe-dir>/data_dir does not exist
+// (GUI_App::OnInit): wxStandardPaths::GetUserDataDir() on
+// Windows/macOS, ${XDG_CONFIG_HOME} (or ~/.config) + app name on
+// Linux. The app name is SLIC3R_APP_KEY, which is also what the GUI
+// sets via SetAppName(). Returns empty when the folder cannot be
+// resolved, so the (best-effort) migration no-ops instead of crashing.
 static std::string get_user_data_dir()
 {
-#if defined(__linux__) || defined(__LINUX__)
-    // Since version 2.3, config dir on Linux is in ${XDG_CONFIG_HOME}.
-    const char* xdg_config_home = std::getenv("XDG_CONFIG_HOME");
-    std::string dir = (xdg_config_home != nullptr && *xdg_config_home != '\0') ?
-        xdg_config_home : (wxFileName::GetHomeDir() + wxS("/.config")).ToUTF8().data();
-    return dir + "/" + SLIC3R_APP_KEY;
+#if defined(_WIN32)
+    const char* appdata = std::getenv("APPDATA");
+    if (appdata != nullptr && *appdata != '\0')
+        return std::string(appdata) + "/" + SLIC3R_APP_KEY;
+    return {};
+#elif defined(__APPLE__)
+    const char* home = std::getenv("HOME");
+    if (home != nullptr && *home != '\0')
+        return std::string(home) + "/Library/Application Support/" + SLIC3R_APP_KEY;
+    return {};
 #else
-    return wxStandardPaths::Get().GetUserDataDir().ToUTF8().data();
+    // Linux: ${XDG_CONFIG_HOME} or ~/.config + app name.
+    const char* xdg_config_home = std::getenv("XDG_CONFIG_HOME");
+    if (xdg_config_home != nullptr && *xdg_config_home != '\0')
+        return std::string(xdg_config_home) + "/" + SLIC3R_APP_KEY;
+    const char* home = std::getenv("HOME");
+    if (home != nullptr && *home != '\0')
+        return std::string(home) + "/.config/" + SLIC3R_APP_KEY;
+    return {};
 #endif
 }
 
