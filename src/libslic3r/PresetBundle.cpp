@@ -67,6 +67,33 @@ std::vector<std::string> SplitPrinterSetting(const AppConfig &config, const std:
     return values;
 }
 
+// GH #616: parse a "|" separated list of flush volumes from the app config.
+// The multi-filament sync/remap path can write an EMPTY string here (and the
+// colour-mode fields alongside it). The old code fed every token straight to
+// boost::lexical_cast<double>, and lexical_cast("") throws bad_lexical_cast,
+// which was uncaught and crashed the app on every launch until the config
+// was repaired by hand. An empty or malformed value now yields an empty
+// vector (the caller keeps the defaults) instead of a crash.
+std::vector<double> ParseFlushVolumes(const std::string &setting, const char *key_name)
+{
+    std::vector<double> values;
+    if (setting.empty())
+        return values;
+    std::vector<std::string> tokens;
+    boost::algorithm::split(tokens, setting, boost::algorithm::is_any_of("|"));
+    for (const std::string &token : tokens) {
+        if (token.empty())
+            continue;
+        try {
+            values.push_back(boost::lexical_cast<double>(token));
+        } catch (const boost::bad_lexical_cast &) {
+            BOOST_LOG_TRIVIAL(warning) << "Ignoring malformed " << key_name << " token in app config: " << token;
+            return std::vector<double>();
+        }
+    }
+    return values;
+}
+
 std::vector<FilamentColorMode> LoadFilamentColourModes(const AppConfig &config, const std::string &printerName)
 {
     std::vector<FilamentColorMode> modes;
@@ -1878,16 +1905,17 @@ void PresetBundle::update_selections(AppConfig &config)
                                                                     filament_presets.size());
     ApplyFilamentColors(project_config, filamentColors);
     EnsureFilamentVolumeTypesAligned(project_config, filament_presets.size());
-    std::vector<std::string> matrix;
     if (config.has_printer_setting(initial_printer_profile_name, "flush_volumes_matrix")) {
-        boost::algorithm::split(matrix, config.get_printer_setting(initial_printer_profile_name, "flush_volumes_matrix"), boost::algorithm::is_any_of("|"));
-        auto flush_volumes_matrix = matrix | boost::adaptors::transformed(boost::lexical_cast<double, std::string>);
-        project_config.option<ConfigOptionFloats>("flush_volumes_matrix")->values = std::vector<double>(flush_volumes_matrix.begin(), flush_volumes_matrix.end());
+        // GH #616: ParseFlushVolumes guards empty/malformed values (see above).
+        std::vector<double> flush_volumes_matrix = ParseFlushVolumes(config.get_printer_setting(initial_printer_profile_name, "flush_volumes_matrix"), "flush_volumes_matrix");
+        if (!flush_volumes_matrix.empty())
+            project_config.option<ConfigOptionFloats>("flush_volumes_matrix")->values = std::move(flush_volumes_matrix);
     }
     if (config.has_printer_setting(initial_printer_profile_name, "flush_volumes_vector")) {
-        boost::algorithm::split(matrix, config.get_printer_setting(initial_printer_profile_name, "flush_volumes_vector"), boost::algorithm::is_any_of("|"));
-        auto flush_volumes_vector = matrix | boost::adaptors::transformed(boost::lexical_cast<double, std::string>);
-        project_config.option<ConfigOptionFloats>("flush_volumes_vector")->values = std::vector<double>(flush_volumes_vector.begin(), flush_volumes_vector.end());
+        // GH #616: ParseFlushVolumes guards empty/malformed values (see above).
+        std::vector<double> flush_volumes_vector = ParseFlushVolumes(config.get_printer_setting(initial_printer_profile_name, "flush_volumes_vector"), "flush_volumes_vector");
+        if (!flush_volumes_vector.empty())
+            project_config.option<ConfigOptionFloats>("flush_volumes_vector")->values = std::move(flush_volumes_vector);
     }
     if (config.has("app", "flush_multiplier")) {
         std::string str_flush_multiplier = config.get("app", "flush_multiplier");
@@ -2011,16 +2039,17 @@ void PresetBundle::load_selections(AppConfig &config, const PresetPreferences& p
                                                                     filament_presets.size());
     ApplyFilamentColors(project_config, filamentColors);
     EnsureFilamentVolumeTypesAligned(project_config, filament_presets.size());
-    std::vector<std::string> matrix;
     if (config.has_printer_setting(initial_printer_profile_name, "flush_volumes_matrix")) {
-        boost::algorithm::split(matrix, config.get_printer_setting(initial_printer_profile_name, "flush_volumes_matrix"), boost::algorithm::is_any_of("|"));
-        auto flush_volumes_matrix = matrix | boost::adaptors::transformed(boost::lexical_cast<double, std::string>);
-        project_config.option<ConfigOptionFloats>("flush_volumes_matrix")->values = std::vector<double>(flush_volumes_matrix.begin(), flush_volumes_matrix.end());
+        // GH #616: ParseFlushVolumes guards empty/malformed values (see above).
+        std::vector<double> flush_volumes_matrix = ParseFlushVolumes(config.get_printer_setting(initial_printer_profile_name, "flush_volumes_matrix"), "flush_volumes_matrix");
+        if (!flush_volumes_matrix.empty())
+            project_config.option<ConfigOptionFloats>("flush_volumes_matrix")->values = std::move(flush_volumes_matrix);
     }
     if (config.has_printer_setting(initial_printer_profile_name, "flush_volumes_vector")) {
-        boost::algorithm::split(matrix, config.get_printer_setting(initial_printer_profile_name, "flush_volumes_vector"), boost::algorithm::is_any_of("|"));
-        auto flush_volumes_vector = matrix | boost::adaptors::transformed(boost::lexical_cast<double, std::string>);
-        project_config.option<ConfigOptionFloats>("flush_volumes_vector")->values = std::vector<double>(flush_volumes_vector.begin(), flush_volumes_vector.end());
+        // GH #616: ParseFlushVolumes guards empty/malformed values (see above).
+        std::vector<double> flush_volumes_vector = ParseFlushVolumes(config.get_printer_setting(initial_printer_profile_name, "flush_volumes_vector"), "flush_volumes_vector");
+        if (!flush_volumes_vector.empty())
+            project_config.option<ConfigOptionFloats>("flush_volumes_vector")->values = std::move(flush_volumes_vector);
     }
     if (config.has("app", "flush_multiplier")) {
         std::string str_flush_multiplier = config.get("app", "flush_multiplier");

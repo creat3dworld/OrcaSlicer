@@ -417,7 +417,7 @@ Wipe::RetractionValues Wipe::calculateWipeRetractionLengths(GCode& gcodegen, boo
     double wipe_path_length = std::min(wipe_path.length(), wipe_dist);
 
     // Calculate the maximum retraction amount during wipe
-    retractionDuringWipe = get_value_at(config, config.retraction_speed, ConfigFlowDomain::Filament, extruder_id) * unscale_(wipe_path_length) / wipe_speed;
+    retractionDuringWipe = config.retraction_speed.get_at(retract_value_index(config, config.retraction_speed.size(), extruder_id)) * unscale_(wipe_path_length) / wipe_speed;
     // If the maximum retraction amount during wipe is too small, return 0 and retract everything prior to the wipe.
     if (retractionDuringWipe <= EPSILON)
         return {retractionBeforeWipe, 0.f};
@@ -599,12 +599,12 @@ std::string WipeTowerIntegration::append_tcr(GCode& gcodegen, const WipeTower::T
         {
             GCodeWriter&     gcode_writer = gcodegen.m_writer;
             FullPrintConfig& full_config  = gcodegen.m_config;
-            float old_retract_length = gcode_writer.extruder() != nullptr ? get_value_at(full_config, full_config.retraction_length, ConfigFlowDomain::Filament, previous_extruder_id) : 0;
-            float new_retract_length = get_value_at(full_config, full_config.retraction_length, ConfigFlowDomain::Filament, new_extruder_id);
+            float old_retract_length = gcode_writer.extruder() != nullptr ? full_config.retraction_length.get_at(retract_value_index(full_config, full_config.retraction_length.size(), previous_extruder_id)) : 0;
+            float new_retract_length = full_config.retraction_length.get_at(retract_value_index(full_config, full_config.retraction_length.size(), new_extruder_id));
             float old_retract_length_toolchange = gcode_writer.extruder() != nullptr ?
-                                                      get_value_at(full_config, full_config.retract_length_toolchange, ConfigFlowDomain::Filament, previous_extruder_id) :
+                                                      full_config.retract_length_toolchange.get_at(retract_value_index(full_config, full_config.retract_length_toolchange.size(), previous_extruder_id)) :
                                                       0;
-            float new_retract_length_toolchange = get_value_at(full_config, full_config.retract_length_toolchange, ConfigFlowDomain::Filament, new_extruder_id);
+            float new_retract_length_toolchange = full_config.retract_length_toolchange.get_at(retract_value_index(full_config, full_config.retract_length_toolchange.size(), new_extruder_id));
             int   old_filament_temp             = gcode_writer.extruder() != nullptr ?
                                                       (gcodegen.on_first_layer() ?
                                                            get_value_at(full_config, full_config.nozzle_temperature_initial_layer, ConfigFlowDomain::Filament, previous_extruder_id) :
@@ -682,7 +682,7 @@ std::string WipeTowerIntegration::append_tcr(GCode& gcodegen, const WipeTower::T
             gcodegen.writer().set_current_position_clear(false);
             // BBS: check whether custom gcode changes the z position. Update if changed
             double temp_z_after_tool_change;
-            if (GCodeProcessor::get_last_z_from_gcode(toolchange_gcode_str, temp_z_after_tool_change)) {
+            if (GCodeProcessor::get_last_z_from_gcode(toolchange_gcode_str, temp_z_after_tool_change, gcodegen.writer().get_position()(2))) {
                 Vec3d pos = gcodegen.writer().get_position();
                 pos(2)    = temp_z_after_tool_change;
                 gcodegen.writer().set_position(pos);
@@ -2616,6 +2616,12 @@ void GCode::_do_export(Print& print, GCodeOutputStream& file, ThumbnailsGenerato
 
     m_enable_cooling_markers = true;
     this->apply_print_config(print.config());
+    // Small area flow compensation is a region option, so it is not set by apply_print_config().
+    // Apply the default object/region configs here so the compensator creation check below sees the
+    // user's setting (upstream OrcaSlicer 2.4.2 does the same). Without this, m_config still holds
+    // the default (off) and the compensator is never created even when the option is enabled.
+    m_config.apply(print.default_object_config());
+    m_config.apply(print.default_region_config());
 
     // m_volumetric_speed = DoExport::autospeed_volumetric_limit(print);
     print.throw_if_canceled();
@@ -5292,7 +5298,7 @@ LayerResult GCode::process_layer(const Print& print,
                 m_writer.set_current_position_clear(false);
                 // BBS: check whether custom gcode changes the z position. Update if changed
                 double temp_z_after_timepals_gcode;
-                if (GCodeProcessor::get_last_z_from_gcode(timepals_gcode, temp_z_after_timepals_gcode)) {
+                if (GCodeProcessor::get_last_z_from_gcode(timepals_gcode, temp_z_after_timepals_gcode, m_writer.get_position()(2))) {
                     Vec3d pos = m_writer.get_position();
                     pos(2)    = temp_z_after_timepals_gcode;
                     m_writer.set_position(pos);
@@ -6720,7 +6726,7 @@ LayerResult GCode::process_layer(const Print& print,
                         m_writer.set_current_position_clear(false);
                         // BBS: check whether custom gcode changes the z position. Update if changed
                         double temp_z_after_timepals_gcode;
-                        if (GCodeProcessor::get_last_z_from_gcode(timepals_gcode, temp_z_after_timepals_gcode)) {
+                        if (GCodeProcessor::get_last_z_from_gcode(timepals_gcode, temp_z_after_timepals_gcode, m_writer.get_position()(2))) {
                             Vec3d pos = m_writer.get_position();
                             pos(2)    = temp_z_after_timepals_gcode;
                             m_writer.set_position(pos);
@@ -7010,7 +7016,7 @@ LayerResult GCode::process_layer(const Print& print,
                                 m_writer.set_current_position_clear(false);
                                 // BBS: check whether custom gcode changes the z position. Update if changed
                                 double temp_z_after_timepals_gcode;
-                                if (GCodeProcessor::get_last_z_from_gcode(timepals_gcode, temp_z_after_timepals_gcode)) {
+                                if (GCodeProcessor::get_last_z_from_gcode(timepals_gcode, temp_z_after_timepals_gcode, m_writer.get_position()(2))) {
                                     Vec3d pos = m_writer.get_position();
                                     pos(2)    = temp_z_after_timepals_gcode;
                                     m_writer.set_position(pos);
@@ -7092,7 +7098,7 @@ LayerResult GCode::process_layer(const Print& print,
             m_writer.set_current_position_clear(false);
             // BBS: check whether custom gcode changes the z position. Update if changed
             double temp_z_after_timepals_gcode;
-            if (GCodeProcessor::get_last_z_from_gcode(timepals_gcode, temp_z_after_timepals_gcode)) {
+            if (GCodeProcessor::get_last_z_from_gcode(timepals_gcode, temp_z_after_timepals_gcode, m_writer.get_position()(2))) {
                 Vec3d pos = m_writer.get_position();
                 pos(2)    = temp_z_after_timepals_gcode;
                 m_writer.set_position(pos);
@@ -8032,7 +8038,13 @@ std::string GCode::_extrude(const ExtrusionPath& path, std::string description, 
         } else if (path.role() == erTopSolidInfill) {
             speed = this->process_flow_value(m_config.top_surface_speed);
         } else if (path.role() == erIroning) {
-            speed = this->process_flow_value(m_config.ironing_speed);
+            // GH #957: filament-specific ironing speed override (ported from
+            // upstream OrcaSlicer). When the filament sets an ironing speed,
+            // use it; a nil entry means "use the process ironing speed".
+            const size_t filament_idx = m_writer.extruder() != nullptr ? m_writer.extruder()->id() : 0;
+            speed = m_config.filament_ironing_speed.is_nil(filament_idx)
+                ? this->process_flow_value(m_config.ironing_speed)
+                : m_config.filament_ironing_speed.get_at(filament_idx);
         } else if (path.role() == erBottomSurface) {
             speed = this->process_flow_value(m_config.initial_layer_infill_speed);
         } else if (path.role() == erGapFill) {
@@ -9111,8 +9123,8 @@ std::string GCode::set_extruder(unsigned int extruder_id, double print_z, bool b
         gcode += m_ooze_prevention.pre_toolchange(*this);
 
     // BBS
-    float new_retract_length            = get_value_at(m_config, m_config.retraction_length, ConfigFlowDomain::Filament, extruder_id);
-    float new_retract_length_toolchange = get_value_at(m_config, m_config.retract_length_toolchange, ConfigFlowDomain::Filament, extruder_id);
+    float new_retract_length            = m_config.retraction_length.get_at(retract_value_index(m_config, m_config.retraction_length.size(), extruder_id));
+    float new_retract_length_toolchange = m_config.retract_length_toolchange.get_at(retract_value_index(m_config, m_config.retract_length_toolchange.size(), extruder_id));
     int   new_filament_temp             = this->on_first_layer() ? get_value_at(m_config, m_config.nozzle_temperature_initial_layer, ConfigFlowDomain::Filament, extruder_id) :
                                                                    get_value_at(m_config, m_config.nozzle_temperature, ConfigFlowDomain::Filament, extruder_id);
     // BBS: if print_z == 0 use first layer temperature
@@ -9135,8 +9147,8 @@ std::string GCode::set_extruder(unsigned int extruder_id, double print_z, bool b
             assert(m_start_gcode_filament < number_of_extruders);
 
         previous_extruder_id          = m_writer.extruder() != nullptr ? m_writer.extruder()->id() : m_start_gcode_filament;
-        old_retract_length            = get_value_at(m_config, m_config.retraction_length, ConfigFlowDomain::Filament, previous_extruder_id);
-        old_retract_length_toolchange = get_value_at(m_config, m_config.retract_length_toolchange, ConfigFlowDomain::Filament, previous_extruder_id);
+        old_retract_length            = m_config.retraction_length.get_at(retract_value_index(m_config, m_config.retraction_length.size(), previous_extruder_id));
+        old_retract_length_toolchange = m_config.retract_length_toolchange.get_at(retract_value_index(m_config, m_config.retract_length_toolchange.size(), previous_extruder_id));
         old_filament_temp             = this->on_first_layer() ? get_value_at(m_config, m_config.nozzle_temperature_initial_layer, ConfigFlowDomain::Filament, previous_extruder_id) :
                                                                  get_value_at(m_config, m_config.nozzle_temperature, ConfigFlowDomain::Filament, previous_extruder_id);
         // Orca: always calculate wipe volume and hence provide correct flush_length, so that MMU devices with cutter and purge bin (e.g.
@@ -9225,7 +9237,7 @@ std::string GCode::set_extruder(unsigned int extruder_id, double print_z, bool b
             m_writer.set_current_position_clear(false);
             // BBS: check whether custom gcode changes the z position. Update if changed
             double temp_z_after_tool_change;
-            if (GCodeProcessor::get_last_z_from_gcode(toolchange_gcode_parsed, temp_z_after_tool_change)) {
+            if (GCodeProcessor::get_last_z_from_gcode(toolchange_gcode_parsed, temp_z_after_tool_change, m_writer.get_position()(2))) {
                 Vec3d pos = m_writer.get_position();
                 pos(2)    = temp_z_after_tool_change;
                 m_writer.set_position(pos);

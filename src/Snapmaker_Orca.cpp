@@ -66,6 +66,8 @@ using namespace nlohmann;
 #include "libslic3r/Format/OBJ.hpp"
 #include "libslic3r/Format/SL1.hpp"
 #include "libslic3r/Utils.hpp"
+#include "libslic3r/AppConfig.hpp"
+#include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/Time.hpp"
 #include "libslic3r/Thread.hpp"
 #include "libslic3r/BlacklistedLibraryCheck.hpp"
@@ -1428,9 +1430,12 @@ int CLI::run(int argc, char **argv)
                         BOOST_LOG_TRIVIAL(info) << "object "<<o->name <<", id :" << o->id().id << ", from bbl 3mf\n";
                     }*/
 
-                    Semver cli_ver = *Semver::parse(SLIC3R_VERSION);
+                    // Compare against the app version (e.g. 2.4.1), not the internal
+                    // engine version SLIC3R_VERSION (01.10.01.50), which uses a different
+                    // scheme and would reject every 3MF written by this app (GH #935).
+                    Semver cli_ver = *Semver::parse(Snapmaker_VERSION);
                     if (!allow_newer_file && ((cli_ver.maj() != file_version.maj()) || (cli_ver.min() < file_version.min()))){
-                        BOOST_LOG_TRIVIAL(error) << boost::format("Version Check: File Version %1% not supported by current cli version %2%")%file_version.to_string() %SLIC3R_VERSION;
+                        BOOST_LOG_TRIVIAL(error) << boost::format("Version Check: File Version %1% not supported by current cli version %2%")%file_version.to_string() %Snapmaker_VERSION;
                         record_exit_reson(outfile_dir, CLI_FILE_VERSION_NOT_SUPPORTED, 0, cli_errors[CLI_FILE_VERSION_NOT_SUPPORTED], sliced_info);
                         flush_and_exit(CLI_FILE_VERSION_NOT_SUPPORTED);
                     }
@@ -1847,6 +1852,54 @@ int CLI::run(int argc, char **argv)
         }
     }
 
+    // Fallback for bare STL input: no --load-settings machine/process and no
+    // 3MF-embedded presets. Use the presets the user has selected in the GUI
+    // (stored in the app config) instead of the built-in "Default Printer" /
+    // "Default Setting" (200x200x100 bed, relative E distances, empty layer
+    // G-code), which fails Print::validate() with "Relative extruder addressing
+    // requires resetting the extruder position at each layer". See GH #1184.
+    if (new_printer_name.empty() && new_process_name.empty() && current_printer_name.empty() && current_process_name.empty()) {
+        AppConfig app_config;
+        if (app_config.load().empty()) {
+            try {
+                PresetBundle preset_bundle;
+                preset_bundle.load_presets(app_config, ForwardCompatibilitySubstitutionRule::Enable);
+                const Preset &selected_printer = preset_bundle.printers.get_selected_preset();
+                const Preset &selected_process = preset_bundle.prints.get_selected_preset();
+                if (selected_printer.name != "Default Printer" && selected_process.name != "Default Setting") {
+                    // Machine (printer) preset.
+                    new_printer_name = selected_printer.name;
+                    new_printer_config_is_system = selected_printer.is_system;
+                    load_machine_config = selected_printer.config;
+                    load_machine_config.set("printer_settings_id", new_printer_name, true);
+                    const std::string &printer_inherits = load_machine_config.option<ConfigOptionString>("inherits", true)->value;
+                    new_printer_system_name = printer_inherits.empty() ? new_printer_name : printer_inherits;
+                    printer_model = load_machine_config.option<ConfigOptionString>("printer_model", true)->value;
+                    if (!printer_model.empty()) {
+                        std::string printer_model_path = resources_dir() + "/profiles/BBL/machine_full/" + printer_model + ".json";
+                        if (boost::filesystem::exists(printer_model_path)) {
+                            std::map<std::string, std::string> key_values;
+                            load_key_values_from_json(printer_model_path, key_values);
+                            if (key_values.find("model_id") != key_values.end())
+                                printer_model_id = key_values["model_id"];
+                        }
+                    }
+                    // Process preset.
+                    new_process_name = selected_process.name;
+                    new_process_config_is_system = selected_process.is_system;
+                    load_process_config = selected_process.config;
+                    load_process_config.set("print_settings_id", new_process_name, true);
+                    const std::string &process_inherits = load_process_config.option<ConfigOptionString>("inherits", true)->value;
+                    new_process_system_name = process_inherits.empty() ? new_process_name : process_inherits;
+                    new_print_compatible_printers = load_process_config.option<ConfigOptionStrings>("compatible_printers", true)->values;
+                    BOOST_LOG_TRIVIAL(info) << boost::format("CLI fallback: using saved presets, printer %1%, process %2%") % new_printer_name % new_process_name;
+                }
+            } catch (const std::exception &ex) {
+                BOOST_LOG_TRIVIAL(warning) << "CLI fallback: failed to load saved presets, using built-in defaults: " << ex.what();
+            }
+        }
+    }
+
     //load filaments files
     int load_filament_count = load_filaments.size();
     std::vector<int> load_filaments_index;
@@ -1958,8 +2011,36 @@ int CLI::run(int argc, char **argv)
 
     if (is_bbl_3mf && (load_filament_count > 0) && (load_filaments_set.size() == 1))
     {
-        disable_wipe_tower_after_mapping = true;
-        BOOST_LOG_TRIVIAL(info) << boost::format("map all the filaments to the same one, load_filament_count %1%")%load_filament_count;
+        // Same preset name does not mean the same filament: several "Generic PLA"
+        // configs can carry different colours. Only map them to one filament (and
+        // disable the prime tower) when the effective colours are also the same.
+        // Check the loaded filament configs first, then the project config from
+        // the 3MF (GH #1119).
+        std::set<std::string> filament_color_set;
+        for (const DynamicPrintConfig &fila_config : load_filaments_config) {
+            const ConfigOptionStrings *color_opt = fila_config.option<ConfigOptionStrings>("filament_colour");
+            if (color_opt != nullptr) {
+                for (const std::string &color : color_opt->values) {
+                    if (!color.empty())
+                        filament_color_set.emplace(color);
+                }
+            }
+        }
+        if (filament_color_set.size() <= 1) {
+            const ConfigOptionStrings *project_colors = m_print_config.option<ConfigOptionStrings>("filament_colour");
+            if (project_colors != nullptr) {
+                for (const std::string &color : project_colors->values) {
+                    if (!color.empty())
+                        filament_color_set.emplace(color);
+                }
+            }
+        }
+        if (filament_color_set.size() <= 1) {
+            disable_wipe_tower_after_mapping = true;
+            BOOST_LOG_TRIVIAL(info) << boost::format("map all the filaments to the same one, load_filament_count %1%")%load_filament_count;
+        } else {
+            BOOST_LOG_TRIVIAL(info) << boost::format("filaments share one preset name but have %1% distinct colours, keeping prime tower enabled")%filament_color_set.size();
+        }
     }
 
     //load system config if needed

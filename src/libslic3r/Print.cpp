@@ -3454,8 +3454,16 @@ void Print::_make_wipe_tower()
             }
         }
 
+        // One category per filament. filament_adhesiveness_category may be missing
+        // or shorter than the filament count (e.g. a project file without the key);
+        // get_at() falls back to the option default (100) for missing entries, so
+        // the list always matches the filament count. Without this, get_filament_category()
+        // returns 0 for the missing filaments while m_filpar[].category is 100, so
+        // tool_change_new() finds no wipe tower block and drops the tool change,
+        // and direct indexing of m_filament_categories can read out of bounds (GH #1130).
         std::vector<int> categories;
-        for (size_t i = 0; i < m_config.filament_adhesiveness_category.values.size(); ++i) {
+        const size_t num_filaments = m_config.filament_diameter.size();
+        for (size_t i = 0; i < num_filaments; ++i) {
             categories.push_back(m_config.filament_adhesiveness_category.get_at(i));
         }
         wipe_tower.set_filament_categories(categories);

@@ -1014,6 +1014,8 @@ static std::vector<std::string> s_Preset_filament_options {
     // Retract overrides
     "filament_retraction_length", "filament_z_hop", "filament_z_hop_types", "filament_retract_lift_above", "filament_retract_lift_below", "filament_retract_lift_enforce", "filament_retraction_speed", "filament_deretraction_speed", "filament_retract_restart_extra", "filament_retraction_minimum_travel",
     "filament_retract_when_changing_layer", "filament_wipe", "filament_retract_before_wipe", "filament_retract_length_toolchange", "filament_retract_restart_extra_toolchange",
+    // GH #957: Ironing overrides
+    "filament_ironing_flow", "filament_ironing_spacing", "filament_ironing_inset", "filament_ironing_speed",
     // Profile compatibility
     "filament_vendor", "compatible_prints", "compatible_prints_condition", "compatible_printers", "compatible_printers_condition", "inherits",
     //BBS
@@ -2837,8 +2839,21 @@ std::vector<std::string> PresetCollection::diameters_of_selected_printer()
     std::set<std::string> diameters;
     auto printer_model = m_edited_preset.config.opt_string("printer_model");
     for (auto &preset : m_presets) {
-        if (preset.is_visible && preset.config.opt_string("printer_model") == printer_model)
-            diameters.insert(preset.config.opt_string("printer_variant"));
+        // List every nozzle size the printer model supports, not only the
+        // variants currently visible in the app config. A system preset is
+        // hidden when its nozzle variant was not enabled in the Config
+        // Wizard, but the nozzle dropdown is the very control that switches
+        // to that preset (and forces it visible on selection), so filtering
+        // it out here makes the size unselectable -- and disables the
+        // dropdown entirely when only one size is visible (e.g. a U1 stuck
+        // at 0.2mm with 0.4/0.6/0.8 heads available). Visible user presets
+        // are still listed as before.
+        if (preset.config.opt_string("printer_model") == printer_model
+            && (preset.is_system || preset.is_visible)) {
+            const std::string variant = preset.config.opt_string("printer_variant");
+            if (!variant.empty())
+                diameters.insert(variant);
+        }
     }
     return std::vector<std::string>{diameters.begin(), diameters.end()};
 }
