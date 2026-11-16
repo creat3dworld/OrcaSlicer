@@ -5276,11 +5276,22 @@ int CLI::run(int argc, char **argv)
                                         // is silently discarded and the run exits 0 with no
                                         // file anywhere: that is the fixed6 no-.gcode symptom
                                         // (bare and U1-settings runs all exited 0, no .gcode).
-                                        // The CWD default restores the old upstream behaviour
-                                        // (see the commented-out plate_<n>.gcode default in
-                                        // the slice action above). The bridge/dashboard always
-                                        // pass --outputdir, so that path is unchanged.
-                                        outfile = "plate_" + std::to_string(index + 1) + ".gcode";
+                                        // The path MUST be absolute. The first version of this
+                                        // fix wrote the bare relative name "plate_<n>.gcode",
+                                        // and GCode::do_export() calls
+                                        // boost::filesystem::create_directory() on the output's
+                                        // parent path: for a bare name the parent is empty, so
+                                        // the call throws ("The system cannot find the path
+                                        // specified"), the slice action catches it and exits
+                                        // 100 with no .gcode — that is the fixed7 re-test
+                                        // failure (tests (b) and (d) exit 100). Prepending the
+                                        // working directory gives create_directory a real parent
+                                        // (the CWD always exists, so the check is a no-op) and
+                                        // the file still lands in the working directory. The
+                                        // bridge/dashboard always pass --outputdir, so that
+                                        // path is unchanged.
+                                        outfile = (boost::filesystem::current_path() /
+                                                   ("plate_" + std::to_string(index + 1) + ".gcode")).string();
                                         part_plate->set_tmp_gcode_path(outfile);
                                     }
                                     else {
