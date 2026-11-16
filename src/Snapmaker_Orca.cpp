@@ -5268,7 +5268,20 @@ int CLI::run(int argc, char **argv)
                                     // The outfile is processed by a PlaceholderParser.
                                     //outfile = part_plate->get_tmp_gcode_path();
                                     if (outfile_dir.empty()) {
-                                        outfile = part_plate->get_tmp_gcode_path();
+                                        // No --outputdir: write plate_<n>.gcode to the current
+                                        // working directory instead of the per-run temp backup
+                                        // dir. The temp dir is deleted by
+                                        // remove_backup_path_if_exist() before CLI::run returns
+                                        // (see the end of CLI::run), so a .gcode written there
+                                        // is silently discarded and the run exits 0 with no
+                                        // file anywhere: that is the fixed6 no-.gcode symptom
+                                        // (bare and U1-settings runs all exited 0, no .gcode).
+                                        // The CWD default restores the old upstream behaviour
+                                        // (see the commented-out plate_<n>.gcode default in
+                                        // the slice action above). The bridge/dashboard always
+                                        // pass --outputdir, so that path is unchanged.
+                                        outfile = "plate_" + std::to_string(index + 1) + ".gcode";
+                                        part_plate->set_tmp_gcode_path(outfile);
                                     }
                                     else {
                                         outfile = outfile_dir + "/plate_" + std::to_string(index + 1) + ".gcode";
