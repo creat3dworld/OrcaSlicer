@@ -1312,7 +1312,13 @@ void GUI_App::shutdown(bool isRecreate)
 
     if (!m_is_recreating_gui)
         m_is_closing = true;
+#ifdef __APPLE__
+    // A CLI left running after Orca quits is reparented to launchd, loses macOS Local Network access and
+    // the next Orca reuses it, so every LAN connect fails with EHOSTUNREACH (#1238). Stop it with the app.
+    stop_gateway_service(!isRecreate);
+#else
     stop_gateway_service();
+#endif
 
 	if (m_removable_drive_manager) {
 		removable_drive_manager()->shutdown();
@@ -5884,7 +5890,7 @@ bool GUI_App::start_gateway_service(bool restart)
     }
 }
 
-void GUI_App::stop_gateway_service()
+void GUI_App::stop_gateway_service(bool terminate_cli)
 {
     ++m_gateway_account_refresh_generation;
     for (std::thread& worker : m_gateway_account_refresh_workers)
@@ -5901,7 +5907,7 @@ void GUI_App::stop_gateway_service()
     m_model_station_push_workers.clear();
 
     if (m_gateway_service)
-        m_gateway_service->stop();
+        m_gateway_service->stop(terminate_cli);
     m_gateway_service.reset();
     clear_gateway_device();
 }
